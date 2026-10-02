@@ -1,0 +1,231 @@
+From 3225ff44e3b59777ffb1d46304a9e7b6c28ee887 Mon Sep 17 00:00:00 2001
+From: Gli_acopo <82150202+GliAcopo@users.noreply.github.com>
+Date: Fri, 2 Oct 2026 20:12:47 +0200
+Subject: [PATCH 1/3] Qt: show check marks of side tool buttons, keep side tool
+ scroll positions
+
+Text buttons in the side tools are flat QPushButtons, which dropped the
+check mark of their action. A checked entry is now a checked button,
+drawn with the selection colours.
+
+When the left side tools are rebuilt (after a change of the menus), the
+vertical scroll positions of their scroll areas are kept, and a checked
+entry is scrolled into view.
+---
+ src/Plugins/Qt/qt_tm_widget.cpp   | 40 +++++++++++++++++++++++++++++++
+ src/Plugins/Qt/qt_ui_element.cpp  |  4 ++++
+ src/Plugins/Qt/qt_utilities.cpp   |  5 ++++
+ src/Plugins/Qt6/qt_tm_widget.cpp  | 40 +++++++++++++++++++++++++++++++
+ src/Plugins/Qt6/qt_ui_element.cpp |  4 ++++
+ src/Plugins/Qt6/qt_utilities.cpp  |  5 ++++
+ 6 files changed, 98 insertions(+)
+
+diff --git a/src/Plugins/Qt/qt_tm_widget.cpp b/src/Plugins/Qt/qt_tm_widget.cpp
+index c6a8af713..4fab2f284 100644
+--- a/src/Plugins/Qt/qt_tm_widget.cpp
++++ b/src/Plugins/Qt/qt_tm_widget.cpp
+@@ -19,6 +19,10 @@
+ #include <QMenuBar>
+ #include <QLayoutItem>
+ #include <QPushButton>
++#include <QScrollArea>
++#include <QScrollBar>
++#include <QPointer>
++#include <QTimer>
+ #include "QTMApplication.hpp"
+ 
+ #include "config.h"
+@@ -942,6 +946,41 @@ qt_tm_widget_rep::install_main_menu () {
+ }
+ 
+ 
++/*! Keep the scroll positions of the side tools when they are rebuilt, and
++ scroll a checked entry (for instance the current section of the section
++ navigator) into view. The positions are restored once the new widget has
++ been laid out. */
++static void
++restore_side_tools_scroll (QWidget* old_w, QWidget* new_w) {
++  QList<int> pos;
++  if (old_w)
++    for (QScrollArea* a : old_w->findChildren<QScrollArea*> ())
++      pos << a->verticalScrollBar()->value();
++  if (!new_w) return;
++  QList<QPointer<QScrollArea> > areas;
++  for (QScrollArea* a : new_w->findChildren<QScrollArea*> ())
++    areas << QPointer<QScrollArea> (a);
++  if (areas.isEmpty ()) return;
++  QTimer::singleShot (0, new_w, [areas, pos] () {
++    for (int i=0; i<areas.size(); i++) {
++      QScrollArea* a= areas[i];
++      if (!a || !a->widget()) continue;
++      if (a->widget()->layout()) a->widget()->layout()->activate ();
++      if (i < pos.size()) a->verticalScrollBar()->setValue (pos[i]);
++      for (QPushButton* b : a->widget()->findChildren<QPushButton*> ())
++        if (b->isCheckable () && b->isChecked ()) {
++          int y= b->mapTo (a->widget(), QPoint (0, 0)).y();
++          int h= b->height ();
++          QScrollBar* sb= a->verticalScrollBar();
++          int top= sb->value(), bot= top + a->viewport()->height();
++          if (y < top + h) sb->setValue (y - 2 * h);
++          else if (y + h > bot - h) sb->setValue (y + 3 * h - (bot - top));
++          break;
++        }
++    }
++  });
++}
++
+ void
+ qt_tm_widget_rep::write (slot s, blackbox index, widget w) {
+   if (DEBUG_QT_WIDGETS)
+@@ -1106,6 +1145,7 @@ qt_tm_widget_rep::write (slot s, blackbox index, widget w) {
+       QWidget* new_qwidget = left_tools_widget->as_qwidget(mainwindow());
+       if (leftTools) {
+         QWidget* old_qwidget = leftTools->widget();
++        restore_side_tools_scroll (old_qwidget, new_qwidget);
+         if (old_qwidget) old_qwidget->deleteLater();
+         leftTools->setWidget (new_qwidget);
+       }
+diff --git a/src/Plugins/Qt/qt_ui_element.cpp b/src/Plugins/Qt/qt_ui_element.cpp
+index 1bd1f5e87..bd9ae3077 100644
+--- a/src/Plugins/Qt/qt_ui_element.cpp
++++ b/src/Plugins/Qt/qt_ui_element.cpp
+@@ -1004,6 +1004,10 @@ qt_ui_element_rep::as_qwidget (QWidget* parent_widget) {
+           b->setText (to_qstring (open_box<T1> (get_payload (qtw)).x1));
+         }
+         b->setFlat (! (style & WIDGET_STYLE_BUTTON));
++        if (pre != "") {  // check marks, e.g. in the side tools
++          b->setCheckable (true);
++          b->setChecked (true);
++        }
+         qwid = b;
+       }
+       qwid->setStyle (qtmstyle());
+diff --git a/src/Plugins/Qt/qt_utilities.cpp b/src/Plugins/Qt/qt_utilities.cpp
+index 48218eebe..82f5ff545 100644
+--- a/src/Plugins/Qt/qt_utilities.cpp
++++ b/src/Plugins/Qt/qt_utilities.cpp
+@@ -14,6 +14,7 @@
+ #include "qt_utilities.hpp"
+ #include <time.h>
+ 
++#include <QPushButton>
+ #include <QImage>
+ #include <QPrinter>
+ #include <QPainter>
+@@ -677,6 +678,10 @@ parse_tm_style (int style) {
+ void
+ qt_apply_tm_style (QWidget* qwid, int style) {
+   QString sheet = "* {" + parse_tm_style (style) + "}";
++  QPushButton* pb= qobject_cast<QPushButton*> (qwid);
++  if (pb && pb->isCheckable ())  // checked entries, e.g. in the side tools
++    sheet += " QPushButton:checked { background-color: palette(highlight);"
++             " color: palette(highlighted-text); }";
+   qwid->setStyleSheet (sheet);
+   qwid->setEnabled (! (style & WIDGET_STYLE_INERT));
+ 
+diff --git a/src/Plugins/Qt6/qt_tm_widget.cpp b/src/Plugins/Qt6/qt_tm_widget.cpp
+index ed629ccf1..765886dcf 100644
+--- a/src/Plugins/Qt6/qt_tm_widget.cpp
++++ b/src/Plugins/Qt6/qt_tm_widget.cpp
+@@ -20,6 +20,10 @@
+ #include <QLayoutItem>
+ #include <QPushButton>
+ #include <QScrollArea>
++#include <QScrollBar>
++#include <QPointer>
++#include <QTimer>
++#include <QScrollArea>
+ #include <QScroller>
+ #include <QScrollBar>
+ #include "QTMApplication.hpp"
+@@ -753,6 +757,41 @@ qt_tm_widget_rep::install_main_menu () {
+ }
+ 
+ 
++/*! Keep the scroll positions of the side tools when they are rebuilt, and
++ scroll a checked entry (for instance the current section of the section
++ navigator) into view. The positions are restored once the new widget has
++ been laid out. */
++static void
++restore_side_tools_scroll (QWidget* old_w, QWidget* new_w) {
++  QList<int> pos;
++  if (old_w)
++    for (QScrollArea* a : old_w->findChildren<QScrollArea*> ())
++      pos << a->verticalScrollBar()->value();
++  if (!new_w) return;
++  QList<QPointer<QScrollArea> > areas;
++  for (QScrollArea* a : new_w->findChildren<QScrollArea*> ())
++    areas << QPointer<QScrollArea> (a);
++  if (areas.isEmpty ()) return;
++  QTimer::singleShot (0, new_w, [areas, pos] () {
++    for (int i=0; i<areas.size(); i++) {
++      QScrollArea* a= areas[i];
++      if (!a || !a->widget()) continue;
++      if (a->widget()->layout()) a->widget()->layout()->activate ();
++      if (i < pos.size()) a->verticalScrollBar()->setValue (pos[i]);
++      for (QPushButton* b : a->widget()->findChildren<QPushButton*> ())
++        if (b->isCheckable () && b->isChecked ()) {
++          int y= b->mapTo (a->widget(), QPoint (0, 0)).y();
++          int h= b->height ();
++          QScrollBar* sb= a->verticalScrollBar();
++          int top= sb->value(), bot= top + a->viewport()->height();
++          if (y < top + h) sb->setValue (y - 2 * h);
++          else if (y + h > bot - h) sb->setValue (y + 3 * h - (bot - top));
++          break;
++        }
++    }
++  });
++}
++
+ void
+ qt_tm_widget_rep::write (slot s, blackbox index, widget w) {
+   if (DEBUG_QT_WIDGETS)
+@@ -904,6 +943,7 @@ qt_tm_widget_rep::write (slot s, blackbox index, widget w) {
+       QWidget* new_qwidget = left_tools_widget->as_qwidget(mainwindow());
+       if (leftTools) {
+         QWidget* old_qwidget = leftTools->widget();
++        restore_side_tools_scroll (old_qwidget, new_qwidget);
+         if (old_qwidget) old_qwidget->deleteLater();
+         leftTools->setWidget (new_qwidget);
+       }
+diff --git a/src/Plugins/Qt6/qt_ui_element.cpp b/src/Plugins/Qt6/qt_ui_element.cpp
+index e4ac495f3..2e1847b4a 100644
+--- a/src/Plugins/Qt6/qt_ui_element.cpp
++++ b/src/Plugins/Qt6/qt_ui_element.cpp
+@@ -990,6 +990,10 @@ qt_ui_element_rep::as_qwidget (QWidget* parent_widget) {
+           b->setText (to_qstring (open_box<T1> (get_payload (qtw)).x1));
+         }
+         b->setFlat (! (style & WIDGET_STYLE_BUTTON));
++        if (pre != "") {  // check marks, e.g. in the side tools
++          b->setCheckable (true);
++          b->setChecked (true);
++        }
+         qwid = b;
+       }
+       qwid->setStyle (qtmstyle());
+diff --git a/src/Plugins/Qt6/qt_utilities.cpp b/src/Plugins/Qt6/qt_utilities.cpp
+index 3ae0b6bfc..317d50a1b 100644
+--- a/src/Plugins/Qt6/qt_utilities.cpp
++++ b/src/Plugins/Qt6/qt_utilities.cpp
+@@ -14,6 +14,7 @@
+ #include "qt_utilities.hpp"
+ #include <time.h>
+ 
++#include <QPushButton>
+ #include <QImage>
+ #include <QPrinter>
+ #include <QPainter>
+@@ -739,6 +740,10 @@ private:
+ void
+ qt_apply_tm_style (QWidget* qwid, int style) {
+   QString sheet = "* {" + parse_tm_style (style) + "}";
++  QPushButton* pb= qobject_cast<QPushButton*> (qwid);
++  if (pb && pb->isCheckable ())  // checked entries, e.g. in the side tools
++    sheet += " QPushButton:checked { background-color: palette(highlight);"
++             " color: palette(highlighted-text); }";
+   qwid->setStyleSheet (sheet);
+   qwid->setEnabled (! (style & WIDGET_STYLE_INERT));
+ 
+-- 
+2.53.0
+
